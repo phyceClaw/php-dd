@@ -180,6 +180,43 @@ static void dump_string(smart_str *b, int mode, zend_string *s)
 	s_close(b, mode, S_STR);
 }
 
+/* Emit the opening of a collapsible compound node in HTML mode:
+ *   <a toggle><arrow/><note>HEADER</note></a> OPEN<extra><samp ...>\n
+ * `extra` is emitted after the opening bracket (used for an object's #id). */
+static void html_open_compound(smart_str *b, int depth, dd_style header_style,
+	const char *header, int header_len, char open_bracket,
+	const char *extra, int extra_len)
+{
+	int collapsed = depth >= 1;
+	smart_str_appends(b, "<a class=sf-dump-toggle href=#><span class=sf-dump-arrow>");
+	smart_str_appends(b, collapsed ? "\xe2\x96\xb6" : "\xe2\x96\xbc"); /* > / v */
+	smart_str_appends(b, "</span>");
+	s_text(b, DD_MODE_HTML, header_style, header, header_len);
+	smart_str_appends(b, "</a> ");
+	smart_str_appendc(b, open_bracket);
+	if (extra_len) {
+		smart_str_appendl(b, extra, extra_len);
+	}
+	smart_str_appends(b, "<samp class=\"sf-dump-children");
+	if (collapsed) {
+		smart_str_appends(b, " sf-dump-collapsed");
+	}
+	smart_str_appends(b, "\" data-depth=");
+	smart_str_append_long(b, (zend_long)(depth + 1));
+	smart_str_appendc(b, '>');
+	smart_str_appendc(b, '\n');
+}
+
+/* Emit the closing of a collapsible compound node in HTML mode:
+ *   </samp><ellipsis>CLOSE  (ellipsis only shows while collapsed) */
+static void html_close_compound(smart_str *b, uint32_t count, char close_bracket)
+{
+	smart_str_appends(b, "</samp><span class=sf-dump-ellip> \xe2\x80\xa6"); /* ... */
+	smart_str_append_long(b, (zend_long) count);
+	smart_str_appends(b, " </span>");
+	smart_str_appendc(b, close_bracket);
+}
+
 static void dump_array(smart_str *b, zval *z, int depth, int mode)
 {
 	zend_array *ht = Z_ARRVAL_P(z);
@@ -195,10 +232,14 @@ static void dump_array(smart_str *b, zval *z, int depth, int mode)
 	}
 
 	char hdr[32];
-	int n = snprintf(hdr, sizeof hdr, "array:%u ", count);
-	s_text(b, mode, S_NOTE, hdr, n);
-	smart_str_appendc(b, '[');
-	smart_str_appendc(b, '\n');
+	int n = snprintf(hdr, sizeof hdr, "array:%u", count);
+
+	if (mode == DD_MODE_HTML) {
+		html_open_compound(b, depth, S_NOTE, hdr, n, '[', NULL, 0);
+	} else {
+		s_text(b, mode, S_NOTE, hdr, n);
+		smart_str_appends(b, " [\n");
+	}
 
 	GC_TRY_PROTECT_RECURSION(ht);
 
@@ -226,7 +267,11 @@ static void dump_array(smart_str *b, zval *z, int depth, int mode)
 	GC_TRY_UNPROTECT_RECURSION(ht);
 
 	indent(b, depth);
-	smart_str_appendc(b, ']');
+	if (mode == DD_MODE_HTML) {
+		html_close_compound(b, count, ']');
+	} else {
+		smart_str_appendc(b, ']');
+	}
 }
 
 static void dump_object(smart_str *b, zval *z, int depth, int mode)
@@ -239,26 +284,34 @@ static void dump_object(smart_str *b, zval *z, int depth, int mode)
 		return;
 	}
 
-	s_text(b, mode, S_NOTE, ZSTR_VAL(cn), ZSTR_LEN(cn));
-	smart_str_appends(b, " {");
-	{
-		char idb[24];
-		int m = snprintf(idb, sizeof idb, "#%u", obj->handle);
-		s_text(b, mode, S_REF, idb, m);
-	}
-
 	zend_array *props = zend_get_properties_for(z, ZEND_PROP_PURPOSE_DEBUG);
 	uint32_t count = props ? zend_hash_num_elements(props) : 0;
 
-	if (count == 0) {
-		smart_str_appendc(b, '}');
-		if (props) {
-			zend_release_properties(props);
+	char idb[24];
+	int idn = snprintf(idb, sizeof idb, "#%u", obj->handle);
+
+	if (mode == DD_MODE_HTML && count > 0) {
+		/* The object id is rendered as styled "extra" right after '{'. */
+		smart_str ref = {0};
+		s_text(&ref, mode, S_REF, idb, idn);
+		smart_str_0(&ref);
+		html_open_compound(b, depth, S_NOTE, ZSTR_VAL(cn), (int) ZSTR_LEN(cn),
+			'{', ZSTR_VAL(ref.s), (int) ZSTR_LEN(ref.s));
+		smart_str_free(&ref);
+	} else {
+		s_text(b, mode, S_NOTE, ZSTR_VAL(cn), ZSTR_LEN(cn));
+		smart_str_appends(b, " {");
+		s_text(b, mode, S_REF, idb, idn);
+		if (count == 0) {
+			smart_str_appendc(b, '}');
+			if (props) {
+				zend_release_properties(props);
+			}
+			return;
 		}
-		return;
+		smart_str_appendc(b, '\n');
 	}
 
-	smart_str_appendc(b, '\n');
 	GC_TRY_PROTECT_RECURSION(obj);
 
 	zend_string *key;
@@ -294,7 +347,11 @@ static void dump_object(smart_str *b, zval *z, int depth, int mode)
 	zend_release_properties(props);
 
 	indent(b, depth);
-	smart_str_appendc(b, '}');
+	if (mode == DD_MODE_HTML) {
+		html_close_compound(b, count, '}');
+	} else {
+		smart_str_appendc(b, '}');
+	}
 }
 
 static void dd_dump(smart_str *b, zval *z, int depth, int mode)
@@ -374,13 +431,19 @@ static int dd_resolve_mode(void)
 
 static void emit_html_assets(void)
 {
-	static const char css[] =
+	static const char assets[] =
 		"<style>"
 		"pre.sf-dump{display:block;white-space:pre;padding:5px;margin:6px 0;"
-		"background:#18171B;color:#FF8400;line-height:1.2em;"
+		"background:#18171B;color:#FF8400;line-height:1.3em;"
 		"font:12px Menlo,Monaco,Consolas,monospace;word-break:normal;"
 		"border-radius:5px;overflow:auto;}"
-		"pre.sf-dump span{display:inline;}"
+		"pre.sf-dump span,pre.sf-dump samp{display:inline;}"
+		".sf-dump-toggle{cursor:pointer;text-decoration:none;color:inherit;}"
+		".sf-dump-arrow{display:inline-block;width:1em;color:#A0A0A0;font-size:10px;"
+		"vertical-align:middle;}"
+		"samp.sf-dump-collapsed{display:none;}"
+		".sf-dump-ellip{display:none;color:#A0A0A0;}"
+		"samp.sf-dump-collapsed + .sf-dump-ellip{display:inline;}"
 		".sf-dump-num{font-weight:bold;color:#1299DA}"
 		".sf-dump-const{font-weight:bold}"
 		".sf-dump-str{font-weight:bold;color:#56DB3A}"
@@ -390,8 +453,25 @@ static void emit_html_assets(void)
 		".sf-dump-index{color:#1299DA}"
 		".sf-dump-meta{color:#B729D9}"
 		".sf-dump-default{color:#FF8400}"
-		"</style>";
-	zend_write(css, sizeof(css) - 1);
+		"</style>"
+		"<script>"
+		"(function(){"
+		"if(window.__ddDumpInit)return;window.__ddDumpInit=1;"
+		"document.addEventListener('click',function(e){"
+		"var t=e.target.closest?e.target.closest('.sf-dump-toggle'):null;"
+		"if(!t)return;e.preventDefault();"
+		"var n=t.nextElementSibling;"
+		"while(n&&n.tagName!=='SAMP')n=n.nextElementSibling;"
+		"if(!n)return;"
+		"var a=t.querySelector('.sf-dump-arrow');"
+		"if(n.classList.contains('sf-dump-collapsed')){"
+		"n.classList.remove('sf-dump-collapsed');if(a)a.textContent='\\u25BC';"
+		"}else{"
+		"n.classList.add('sf-dump-collapsed');if(a)a.textContent='\\u25B6';"
+		"}});"
+		"})();"
+		"</script>";
+	zend_write(assets, sizeof(assets) - 1);
 }
 
 static void dd_render(zval *args, int argc)

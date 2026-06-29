@@ -4,7 +4,7 @@
 extern zend_module_entry dd_module_entry;
 #define phpext_dd_ptr &dd_module_entry
 
-#define PHP_DD_VERSION "0.1.0"
+#define PHP_DD_VERSION "0.2.0"
 
 #ifdef ZTS
 #include "TSRM.h"

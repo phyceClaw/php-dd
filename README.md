@@ -15,13 +15,19 @@ Symfony VarDumper's default theme — the same dumper Laravel uses.
 
 | Context                       | Format                                   |
 |-------------------------------|------------------------------------------|
-| Web SAPI                      | styled HTML `<pre class=sf-dump>` block  |
+| Web SAPI                      | styled HTML `<pre class=sf-dump>` with collapsible nodes |
 | CLI on a TTY                  | ANSI 256-colour                          |
 | CLI piped, or `NO_COLOR` set  | plain text                               |
 
 The colour palette, `array:N [...]` / `Class {#id ...}` layout, and the
 `+` public / `#` protected / `-` private visibility markers all match
 Symfony VarDumper.
+
+In the browser, nested arrays/objects are **collapsible**: the top level is
+expanded and deeper levels are collapsed behind a ▶ toggle (showing a ` …N `
+element-count placeholder) so you aren't flooded with the whole structure at
+once — click any node to expand/collapse it. The required CSS/JS is emitted
+once per request.
 
 ## Build
 
@@ -58,7 +64,8 @@ defer to these — no "cannot redeclare" fatal.
   uninitialized typed properties), resource; circular references are detected
   and shown as `*RECURSION*`.
 - Floats use shortest round-tripping form (`serialize_precision = -1`).
-- HTML output is styled and escaped but **static** — the interactive
-  collapse/expand JavaScript widget from Symfony VarDumper is not reproduced.
+- HTML output is interactive (click to expand/collapse nested nodes) but does
+  not reproduce Symfony VarDumper's full widget (keyboard nav, search, source
+  links, "expand all").
 - Closures, and Symfony's per-class "casters" (Carbon, collections, etc.),
   are dumped as plain objects rather than with bespoke formatting.
